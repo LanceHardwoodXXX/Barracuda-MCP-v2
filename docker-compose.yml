@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  barracuda-mcp-v2:
+    build: .
+    image: barracuda-mcp:v2
+    container_name: barracuda-mcp-server-v2
+    
+    environment:
+      # Required: Firewall connection
+      BARRACUDA_HOST: ${BARRACUDA_HOST}
+      BARRACUDA_API_TOKEN: ${BARRACUDA_API_TOKEN}
+      
+      # Optional: Log level
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      
+      # Python settings
+      PYTHONUNBUFFERED: 1
+      
+    # For MCP stdio communication
+    stdin_open: true
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.25'
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "/app/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/logs
