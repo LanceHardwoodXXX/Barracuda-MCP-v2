@@ -13,7 +13,7 @@ import httpx
 from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import Tool, TextContent, ServerCapabilities, ToolsCapability
 import json
 from datetime import datetime
 from enum import Enum
@@ -743,7 +743,7 @@ async def list_service_objects(filter_str: str = "") -> List[TextContent]:
             "GET",
             "/rest/config/v1/forwarding-firewall/objects/services"
         )
-        
+
         if result and "objects" in result:
             objects = result["objects"]
             
@@ -762,10 +762,43 @@ async def list_service_objects(filter_str: str = "") -> List[TextContent]:
             
             if len(objects_to_show) > 50:
                 text += f"\n... and {len(objects_to_show) - 50} more"
-            
+
             return [TextContent(type="text", text=text)]
-        
+
         return [TextContent(type="text", text="❌ Failed to retrieve service objects")]
-        
+
     except Exception as e:
-        return
+        return [TextContent(type="text", text=f"❌ Error: {str(e)}")]
+
+
+async def main() -> None:
+    """Run the MCP server over stdio."""
+    logger.info("Starting Barracuda CloudGen Firewall MCP server v2")
+
+    try:
+        async with stdio_server() as (read, write):
+            await app.run(
+                read,
+                write,
+                InitializationOptions(
+                    server_name="barracuda-cgf-admin-v2",
+                    server_version="2.0.0",
+                    capabilities=ServerCapabilities(
+                        tools=ToolsCapability()
+                    ),
+                ),
+                NotificationOptions(),
+            )
+    finally:
+        await barracuda_client.close()
+        logger.info("Barracuda client shutdown complete")
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Server shutdown requested")
+    except Exception:
+        logger.exception("Unexpected error while running MCP server")
+        sys.exit(1)
