@@ -250,5 +250,3 @@ MIT License - see [LICENSE](LICENSE) file
 | Manage Dynamic Rules | ✅ | ❌ |
 
 ---
-
-**Note**: This project is not affiliated with or endorsed by Barracuda Networks.
