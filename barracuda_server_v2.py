@@ -153,6 +153,103 @@ def format_status(state: str) -> str:
     else:
         return f"❓ {state}"
 
+def _format_sequence(values) -> str:
+    """Helper to format list-like structures recursively."""
+    formatted_parts = []
+
+    for value in values:
+        part = format_rule_object(value)
+        if part and part != "Any":
+            formatted_parts.append(part)
+
+    if not formatted_parts:
+        return "Any"
+
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_parts = []
+    for part in formatted_parts:
+        if part not in seen:
+            seen.add(part)
+            unique_parts.append(part)
+
+    return ", ".join(unique_parts)
+
+def _format_address_entry(entry: Dict[str, Any]) -> str:
+    """Format individual address/service entries."""
+    if not isinstance(entry, dict):
+        return str(entry)
+
+    if entry.get("type") == "network":
+        network = entry.get("network")
+        mask = entry.get("mask")
+        if network and mask:
+            return f"{network}/{mask}"
+
+    if entry.get("type") == "service" and entry.get("port"):
+        protocol = entry.get("protocol", "proto")
+        return f"{protocol}/{entry.get('port')}"
+
+    if entry.get("name"):
+        return str(entry["name"])
+
+    # Generic fallback
+    parts = [f"{k}: {v}" for k, v in entry.items() if v not in (None, "", [], {})]
+    return ", ".join(parts) if parts else "Any"
+
+def format_rule_object(obj: Any) -> str:
+    """Human-friendly representation of rule components."""
+
+    if obj in (None, "", {}, []):
+        return "Any"
+
+    if isinstance(obj, str):
+        return obj
+
+    if isinstance(obj, list):
+        return _format_sequence(obj)
+
+    if isinstance(obj, dict):
+        if obj.get("any") or obj.get("type") == "any":
+            return "Any"
+
+        parts: List[str] = []
+
+        references = obj.get("references") or obj.get("reference")
+        if references:
+            if isinstance(references, list):
+                parts.append(_format_sequence(references))
+            else:
+                parts.append(str(references))
+
+        for key in ("networks", "services", "addresses", "ports"):
+            value = obj.get(key)
+            if value:
+                if isinstance(value, list):
+                    formatted = [_format_address_entry(item) for item in value]
+                    parts.append(", ".join(filter(None, formatted)))
+                else:
+                    parts.append(str(value))
+
+        # Capture single address/service objects
+        if not parts:
+            singular = obj.get("name") or obj.get("label") or obj.get("value")
+            if singular:
+                parts.append(str(singular))
+
+        if not parts:
+            kv_pairs = [
+                f"{k}: {v}" for k, v in obj.items()
+                if v not in (None, "", [], {})
+            ]
+            if kv_pairs:
+                parts.append(", ".join(kv_pairs))
+
+        joined = ", ".join(part for part in parts if part)
+        return joined if joined else "Any"
+
+    return str(obj)
+
 @app.list_tools()
 async def list_tools() -> List[Tool]:
     """List available tools"""
