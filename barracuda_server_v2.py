@@ -99,7 +99,7 @@ class BarracudaClient:
         data: Optional[Dict] = None
     ) -> Optional[Dict]:
         """Make authenticated request to Barracuda API"""
-        
+
         headers = {
             "Accept": "application/json",
             "X-API-Token": self.token
@@ -111,18 +111,28 @@ class BarracudaClient:
         try:
             url = f"{self.base_url}{endpoint}"
             
-            if method.upper() == "GET":
+            method_upper = method.upper()
+
+            if method_upper == "GET":
                 response = await self.client.get(url, headers=headers, params=params)
-            elif method.upper() == "POST":
-                response = await self.client.post(url, headers=headers, json=data)
-            elif method.upper() == "PUT":
-                response = await self.client.put(url, headers=headers, json=data)
-            elif method.upper() == "DELETE":
-                response = await self.client.delete(url, headers=headers)
+            elif method_upper == "POST":
+                response = await self.client.post(
+                    url, headers=headers, params=params, json=data
+                )
+            elif method_upper == "PUT":
+                response = await self.client.put(
+                    url, headers=headers, params=params, json=data
+                )
+            elif method_upper == "PATCH":
+                response = await self.client.patch(
+                    url, headers=headers, params=params, json=data
+                )
+            elif method_upper == "DELETE":
+                response = await self.client.delete(url, headers=headers, params=params)
             else:
                 logger.error(f"Unsupported method: {method}")
                 return None
-            
+
             if response.status_code == 204:
                 return {"message": "Success", "status_code": 204}
             elif 200 <= response.status_code < 300:
@@ -325,6 +335,52 @@ async def list_tools() -> List[Tool]:
             }
         ),
         Tool(
+            name="set_firewall_rule_state",
+            description="Enable or disable a firewall rule (standard mode only)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "rule_name": {
+                        "type": "string",
+                        "description": "Name of the firewall rule"
+                    },
+                    "activate": {
+                        "type": "boolean",
+                        "description": "Set to true to enable the rule, false to disable"
+                    }
+                },
+                "required": ["rule_name", "activate"]
+            }
+        ),
+        Tool(
+            name="set_dynamic_rule_state",
+            description="Enable or disable a dynamic firewall rule",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "rule_name": {
+                        "type": "string",
+                        "description": "Name of the dynamic rule"
+                    },
+                    "action": {
+                        "type": "string",
+                        "description": "Action to perform (enable or disable)",
+                        "enum": ["enable", "disable"]
+                    },
+                    "expires_in": {
+                        "type": "integer",
+                        "description": "Optional duration in seconds before the rule auto-disables"
+                    },
+                    "expire_action": {
+                        "type": "string",
+                        "description": "Action to execute when the timer expires",
+                        "default": "disable"
+                    }
+                },
+                "required": ["rule_name", "action"]
+            }
+        ),
+        Tool(
             name="create_firewall_rule",
             description="Create a new firewall rule (standard mode only)",
             inputSchema={
@@ -425,6 +481,18 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             return await get_firewall_rule(rule_name)
         elif name == "list_dynamic_rules":
             return await list_dynamic_rules()
+        elif name == "set_firewall_rule_state":
+            return await set_firewall_rule_state(
+                arguments.get("rule_name", ""),
+                arguments.get("activate", True)
+            )
+        elif name == "set_dynamic_rule_state":
+            return await set_dynamic_rule_state(
+                arguments.get("rule_name", ""),
+                arguments.get("action", ""),
+                arguments.get("expires_in"),
+                arguments.get("expire_action", "disable")
+            )
         elif name == "create_firewall_rule":
             return await create_firewall_rule(
                 arguments.get("name"),
@@ -633,22 +701,119 @@ async def list_dynamic_rules() -> List[TextContent]:
             "GET",
             "/rest/firewall/v1/forwarding-firewall/rules/dynamic"
         )
-        
+
         if result and "rules" in result:
             rules = result["rules"]
             text = f"⚡ **Dynamic Firewall Rules ({len(rules)} total)**\n"
             text += "=" * 50 + "\n\n"
-            
+
             if rules:
                 for i, rule_name in enumerate(rules, 1):
                     text += f"{i}. {rule_name}\n"
             else:
                 text += "No dynamic rules configured.\n"
-            
+
             return [TextContent(type="text", text=text)]
         else:
             return [TextContent(type="text", text="❌ Could not retrieve dynamic rules")]
-        
+
+    except Exception as e:
+        return [TextContent(type="text", text=f"❌ Error: {str(e)}")]
+
+async def set_firewall_rule_state(rule_name: str, activate: bool) -> List[TextContent]:
+    """Enable or disable a standard firewall rule"""
+
+    if not rule_name:
+        return [TextContent(type="text", text="❌ Rule name is required")]
+
+    if barracuda_client.mode == FirewallMode.UNKNOWN:
+        await barracuda_client.detect_firewall_mode()
+
+    if barracuda_client.mode == FirewallMode.POLICY_DRIVEN:
+        return [TextContent(
+            type="text",
+            text="⚠️ Cannot modify rule state on policy-driven firewall.\n"
+                 "Rules must be managed through Barracuda Control Center."
+        )]
+
+    try:
+        result = await barracuda_client.make_request(
+            "PATCH",
+            f"/rest/config/v1/forwarding-firewall/rules/{rule_name}",
+            data={"deactivated": not activate}
+        )
+
+        if result and "error" not in result:
+            state_text = "enabled" if activate else "disabled"
+            return [TextContent(
+                type="text",
+                text=f"✅ Successfully {state_text} rule '{rule_name}'"
+            )]
+
+        error_msg = result.get("error", "Unknown error") if result else "No response"
+        return [TextContent(type="text", text=f"❌ Failed to update rule: {error_msg}")]
+
+    except Exception as e:
+        return [TextContent(type="text", text=f"❌ Error: {str(e)}")]
+
+async def set_dynamic_rule_state(
+    rule_name: str,
+    action: str,
+    expires_in: Optional[int] = None,
+    expire_action: str = "disable"
+) -> List[TextContent]:
+    """Enable or disable a dynamic firewall rule"""
+
+    if not rule_name:
+        return [TextContent(type="text", text="❌ Dynamic rule name is required")]
+
+    if barracuda_client.mode == FirewallMode.UNKNOWN:
+        await barracuda_client.detect_firewall_mode()
+
+    if barracuda_client.mode == FirewallMode.POLICY_DRIVEN:
+        return [TextContent(
+            type="text",
+            text="⚠️ Dynamic rules are not available on policy-driven firewalls."
+        )]
+
+    action = (action or "").lower()
+    if action not in {"enable", "disable"}:
+        return [TextContent(type="text", text="❌ Action must be 'enable' or 'disable'")]
+
+    payload: Dict[str, Any] = {"action": action}
+
+    if action == "enable":
+        if expires_in is not None:
+            if expires_in <= 0:
+                return [TextContent(
+                    type="text",
+                    text="❌ expires_in must be a positive number of seconds"
+                )]
+            payload["expiresIn"] = int(expires_in)
+            payload["expireAction"] = expire_action or "disable"
+        elif expire_action:
+            payload["expireAction"] = expire_action
+
+    try:
+        result = await barracuda_client.make_request(
+            "POST",
+            f"/rest/firewall/v1/forwarding-firewall/rules/dynamic/{rule_name}",
+            params={"envelope": "true"},
+            data=payload
+        )
+
+        if result and "error" not in result:
+            summary = f"{action.capitalize()}d"
+            if action == "enable" and "expiresIn" in payload:
+                summary += f" for {payload['expiresIn']} seconds"
+            return [TextContent(
+                type="text",
+                text=f"✅ Successfully {summary} dynamic rule '{rule_name}'"
+            )]
+
+        error_msg = result.get("error", "Unknown error") if result else "No response"
+        return [TextContent(type="text", text=f"❌ Failed to update dynamic rule: {error_msg}")]
+
     except Exception as e:
         return [TextContent(type="text", text=f"❌ Error: {str(e)}")]
 
